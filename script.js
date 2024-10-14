@@ -1,5 +1,7 @@
 // Load stratagem data
 var stratagems = undefined;
+var playingStratagems = [];
+var playingSpeed = 1;
 
 var xhr = new XMLHttpRequest();
 xhr.open(method='GET', url='./data/HD2-Sequences.json', async=false); // false indicates synchronous request
@@ -12,7 +14,11 @@ if (xhr.status === 200) {
 }
 
 stratagems = JSON.parse(stratagems);
-// console.log(stratagems);
+let storageStrats = JSON.parse(localStorage.getItem("stratagemsLoadout")) || [];
+if(storageStrats?.length > 0 )
+    playingStratagems = [...storageStrats];
+else
+    playingStratagems = [...stratagems];
 
 // Install keypress listener
 function mainGameKeyDownListener(event) {
@@ -73,6 +79,13 @@ function gamepadLoop() {
     requestAnimationFrame(gamepadLoop);
 }
 
+function groupBy(xs, key) {
+    return xs.reduce(function(rv, x) {
+      (rv[x[key]] = rv[x[key]] || []).push(x);
+      return rv;
+    }, {});
+  }
+
 // Load SFX
 var sfxDown = new Audio("./data/Sounds/1_D.mp3");
 var sfxLeft = new Audio("./data/Sounds/2_L.mp3");
@@ -96,13 +109,104 @@ var completedStrategemsList = [];
 const CURRENT_STRATAGEM_LIST_LENGTH = 4; //dependent on the html, don't change without modifying html too
 var currentStratagemsList = [];
 var lastCheckedTime = undefined;
-var CONFIGPOPUP = document.getElementById('game-config-popup');
+var KEYBINDINGS_MODALE = document.getElementById('game-config-popup');
+var SETTINGS_MODALE = document.getElementById('game-settings-popup');
 var TEMPARROWKEYS = {};
 
 // initial state of custom config
 const storedArrowKeysConfig = localStorage.getItem("CONFIG.arrowKeys") ? JSON.parse(localStorage.getItem("CONFIG.arrowKeys")) : false;
 const CONFIG = {};
-
+let configPopupEvents = [
+    ["input[type=text]", configPopupInputListener],
+    ["keydown", configPopupKeydownListener]
+  ];
+  function addConfigPopupListener() {
+    configPopupEvents.forEach((event)=>{
+        addEventListener(event[0], event[1]);
+    })
+  }
+  function removeConfigPopupListener() {
+    configPopupEvents.forEach((event)=>{
+        removeEventListener(event[0], event[1]);
+    })
+  }
+  
+  function toggleConfigPopup() {
+    let popupCurrentState = KEYBINDINGS_MODALE.classList.contains("active");
+  
+    if (popupCurrentState == true) {
+      KEYBINDINGS_MODALE.classList.remove("active");
+      addMainGameListener();
+      removeConfigPopupListener();
+    } else {
+      KEYBINDINGS_MODALE.classList.add("active");
+      initaliseConfigPopupInputs();
+      removeMainGameListener();
+      addConfigPopupListener();
+      TEMPARROWKEYS = Object.assign({}, CONFIG.arrowKeys);
+    }
+  }
+  
+  function configSaveArrowKeys() {
+    CONFIG.arrowKeys = TEMPARROWKEYS;
+    localStorage.setItem("CONFIG.arrowKeys", JSON.stringify(CONFIG.arrowKeys));
+  }
+  
+  function configPopupKeydownListener(event) {
+    let activeElement = document.activeElement;
+  
+    if (activeElement.tagName == "INPUT") {
+        let excludedKeys = ["TAB", "ALT"];
+        if (!excludedKeys.find((keyCode) => event.code.toUpperCase().includes(keyCode))) {
+            TEMPARROWKEYS[activeElement.name] = event.code;
+        }
+    }
+  }
+  
+  function configPopupInputListener(event) {
+    //this limits the input charater length to 1 char
+    event.target.value = event.data.toUpperCase();
+  }
+  
+  function configPopupButtonListener(event) {
+    let actionTypes = ["game-config--save", "game-config--close", "game-config--open"];
+    let foundType = actionTypes.find(actionType => {
+        return event.target.closest(`[data-action-type="${actionType}"]`);
+    });
+    let foundButton = event.target.closest(`[data-action-type="${foundType}"]`);
+  
+    if (foundButton) {
+        switch (foundButton.dataset.actionType) {
+            case "game-config--save":
+                //save controls
+                configSaveArrowKeys();
+                //NOTE: This is a intentional missing break as i want both the save and the popup close to happen due to there not being any more settings here
+            case "game-config--close":
+            case "game-config--open":
+                //close popup
+                toggleConfigPopup();
+                break;
+        }
+    }
+  }
+  
+  function getConfigPopupInputs() {
+    return KEYBINDINGS_MODALE.querySelectorAll('input[name][type=text]');
+  }
+  
+  function initaliseConfigPopupInputs() {
+    let inputs = getConfigPopupInputs();
+  
+    inputs.forEach((input)=>{
+        let inputKey = Object.keys(CONFIG.arrowKeys).find((key)=>{
+            return key.toLowerCase() == input.name.toLowerCase();
+        });
+        
+        if (inputKey) {
+            input.value = CONFIG.arrowKeys[inputKey].slice(-1).toUpperCase();
+        }
+    })
+  }
 
 if(storedArrowKeysConfig) {
     CONFIG.arrowKeys = storedArrowKeysConfig;
@@ -277,7 +381,7 @@ function refreshStratagemDisplay(){
 }
 
 function pickRandomStratagem(){
-    return stratagems[Math.floor(Math.random() * stratagems.length)];
+    return playingStratagems[Math.floor(Math.random() * playingStratagems.length)];
 }
 
 function showArrowSequence(arrowSequence, arrowsContainer){
@@ -387,25 +491,6 @@ function stratagemListToString(html, spamless){
     return re;
 }
 
-function copyShare(spamless){
-    // Gather text and write to clipboard
-    let output = `## My Stratagem Hero Online Score: ${completedStrategemsList.length}\n`
-    output += stratagemListToString(false, spamless);
-    output += "Do your part! Play Stratagem Hero Online: https://combustibletoast.github.io/"
-    navigator.clipboard.writeText(output);
-
-    //Change button's text
-    let buttonElement = document.getElementById(`share-button${spamless ? "-spamless" : ""}`);
-    let buttonOriginalText = buttonElement.innerHTML;
-    buttonElement.innerHTML = "Copied!";
-
-    //Set timeout to change it back
-    //Doesn't work, unable to pass in original text
-    setTimeout(() => {
-        buttonElement.innerHTML = buttonOriginalText;
-    }, 3000);
-}
-
 async function countDown(){
     if(gameState == "over")
         return;
@@ -426,12 +511,11 @@ async function countDown(){
     // Immediately Set timeout for next countdown step
     setTimeout(() => {
         countDown();
-        // console.log(timeRemaining)
     }, COUNTDOWN_STEP);
 
     // Apply countdown if it's not paused
     if(gameState != "hitlag" && gameState != "initial")
-        timeRemaining -= trueDeltaT;
+        timeRemaining -= trueDeltaT * playingSpeed;
     updateTimeBar();
 }
 
@@ -463,63 +547,6 @@ function showMobileButtons() {
     container.style.visibility = "visible";
 }
 
-function configPopupInputListener(event) {
-    //this limits the input charater length to 1 char
-    event.target.value = event.data.toUpperCase();
-}
-function configPopupButtonListener(event) {
-    let actionTypes = ["game-config--save", "game-config--close", "game-config--open"];
-    let foundType = actionTypes.find(actionType => {
-        return event.target.closest(`[data-action-type="${actionType}"]`);
-    });
-    let foundButton = event.target.closest(`[data-action-type="${foundType}"]`);
-
-    if (foundButton) {
-        switch (foundButton.dataset.actionType) {
-            case "game-config--save":
-                //save controls
-                configSaveArrowKeys();
-                //NOTE: This is a intentional missing break as i want both the save and the popup close to happen due to there not being any more settings here
-            case "game-config--close":
-            case "game-config--open":
-                //close popup
-                toggleConfigPopup();
-                break;
-        }
-    }
-}
-
-function configSaveArrowKeys() {
-    CONFIG.arrowKeys = TEMPARROWKEYS;
-    localStorage.setItem("CONFIG.arrowKeys", JSON.stringify(CONFIG.arrowKeys));
-}
-
-function configPopupKeydownListener(event) {
-    let activeElement = document.activeElement;
-
-    if (activeElement.tagName == "INPUT") {
-        let excludedKeys = ["TAB", "ALT"];
-        if (!excludedKeys.find((keyCode) => event.code.toUpperCase().includes(keyCode))) {
-            TEMPARROWKEYS[activeElement.name] = event.code;
-        }
-    }
-}
-
-
-let configPopupEvents = [
-    ["input", configPopupInputListener],
-    ["keydown", configPopupKeydownListener]
-];
-function addConfigPopupListener() {
-    configPopupEvents.forEach((event)=>{
-        addEventListener(event[0], event[1]);
-    })
-}
-function removeConfigPopupListener() {
-    configPopupEvents.forEach((event)=>{
-        removeEventListener(event[0], event[1]);
-    })
-}
 
 function addMainGameListener() {
     addEventListener("keydown", mainGameKeyDownListener);
@@ -529,36 +556,22 @@ function removeMainGameListener() {
     removeEventListener("keydown", mainGameKeyDownListener);
 }
 
-function toggleConfigPopup() {
-    let popupCurrentState = CONFIGPOPUP.classList.contains('active');
 
-    if (popupCurrentState == true) {
-        CONFIGPOPUP.classList.remove('active');
-        addMainGameListener();
-        removeConfigPopupListener();
-    } else {
-        CONFIGPOPUP.classList.add('active');
-        initaliseConfigPopupInputs();
-        removeMainGameListener();
-        addConfigPopupListener();
-        TEMPARROWKEYS = Object.assign({}, CONFIG.arrowKeys);
-    }
-}
+function copyShare(spamless){
+    // Gather text and write to clipboard
+    let output = `## My Stratagem Hero Online Score: ${completedStrategemsList.length}\n`
+    output += stratagemListToString(false, spamless);
+    output += "Do your part! Play Stratagem Hero Online: https://combustibletoast.github.io/"
+    navigator.clipboard.writeText(output);
 
-function getConfigPopupInputs() {
-    return CONFIGPOPUP.querySelectorAll('input[name][type=text]');
-}
+    //Change button's text
+    let buttonElement = document.getElementById(`share-button${spamless ? "-spamless" : ""}`);
+    let buttonOriginalText = buttonElement.innerHTML;
+    buttonElement.innerHTML = "Copied!";
 
-function initaliseConfigPopupInputs() {
-    let inputs = getConfigPopupInputs();
-
-    inputs.forEach((input)=>{
-        let inputKey = Object.keys(CONFIG.arrowKeys).find((key)=>{
-            return key.toLowerCase() == input.name.toLowerCase();
-        });
-        
-        if (inputKey) {
-            input.value = CONFIG.arrowKeys[inputKey].slice(-1).toUpperCase();
-        }
-    })
+    //Set timeout to change it back
+    //Doesn't work, unable to pass in original text
+    setTimeout(() => {
+        buttonElement.innerHTML = buttonOriginalText;
+    }, 3000);
 }
